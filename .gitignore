@@ -173,6 +173,12 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+# Streamlit
+.streamlit/secrets.toml
+
+# Projetos guardados localmente (podem conter dados de clientes)
+projects/
+
 # Cursor  
 #  Cursor is an AI-powered code editor.`.cursorignore` specifies files/directories to 
 #  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
