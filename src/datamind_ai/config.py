@@ -45,7 +45,7 @@ class Settings:
         except ValueError:
             backend = LLMBackend.OLLAMA if confidential else LLMBackend.AUTO
 
-        default_ollama = os.getenv("OLLAMA_MODEL", "llama3")
+        default_ollama = os.getenv("OLLAMA_MODEL", "")
         ollama_models = {}
         for task in LLMTask:
             env_key = f"OLLAMA_MODEL_{task.value.upper()}"

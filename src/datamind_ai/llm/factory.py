@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datamind_ai.config import LLMBackend, Settings
 from datamind_ai.llm.base import LLMProvider
+from datamind_ai.llm.ollama_models import list_ollama_models
 from datamind_ai.llm.ollama_provider import OllamaProvider
 from datamind_ai.llm.openai_provider import OpenAIProvider
 from datamind_ai.llm.tasks import LLMTask
@@ -9,8 +10,8 @@ from datamind_ai.llm.tasks import LLMTask
 OLLAMA_SETUP_MSG = (
     "Ollama não está disponível. Para uso local com dados confidenciais:\n"
     "1. Instale Ollama: https://ollama.com\n"
-    "2. Execute: ollama pull llama3\n"
-    "3. (Opcional) ollama create datamind-chat -f modelfiles/datamind-chat.Modelfile\n"
+    "2. Execute: `ollama pull gemma2` (ou llama3, mistral, etc.)\n"
+    "3. Crie `.env` com `OLLAMA_MODEL=` igual ao modelo de `ollama list`\n"
     "4. Verifique que o serviço está a correr em http://localhost:11434"
 )
 
@@ -42,12 +43,20 @@ def create_provider(
 
     if settings.confidential_mode:
         model = settings.get_ollama_model(task)
-        return OllamaProvider(settings.ollama_base_url, model)
+        return OllamaProvider(
+            settings.ollama_base_url,
+            model,
+            fallback_model=settings.ollama_model,
+        )
 
     backend = _resolve_backend(settings)
     if backend == LLMBackend.OLLAMA:
         model = settings.get_ollama_model(task)
-        return OllamaProvider(settings.ollama_base_url, model)
+        return OllamaProvider(
+            settings.ollama_base_url,
+            model,
+            fallback_model=settings.ollama_model,
+        )
 
     return OpenAIProvider(settings.openai_api_key, settings.openai_model)
 
@@ -70,10 +79,26 @@ def detect_available_backends(settings: Settings | None = None) -> dict[str, boo
     return result
 
 
+def get_installed_ollama_models(settings: Settings | None = None) -> list[str]:
+    settings = settings or Settings.from_env()
+    return list_ollama_models(settings.ollama_base_url)
+
+
 def get_task_models(settings: Settings | None = None) -> dict[str, str]:
     settings = settings or Settings.from_env()
     if settings.confidential_mode or _resolve_backend(settings) == LLMBackend.OLLAMA:
-        return {task.value: settings.get_ollama_model(task) for task in LLMTask}
+        available = list_ollama_models(settings.ollama_base_url)
+        result = {}
+        for task in LLMTask:
+            requested = settings.get_ollama_model(task)
+            from datamind_ai.llm.ollama_models import resolve_ollama_model
+
+            resolved, _ = resolve_ollama_model(
+                requested, settings.ollama_base_url, settings.ollama_model
+            )
+            suffix = "" if resolved == requested or requested in available else " ⚠️"
+            result[task.value] = f"{resolved}{suffix}"
+        return result
     return {task.value: settings.openai_model for task in LLMTask}
 
 

@@ -13,6 +13,14 @@ import streamlit as st
 
 from datamind_ai.config import Settings
 from datamind_ai.business_rules.detector import detect_business_rules
+from datamind_ai.dashboard.ui import (
+    PresentationConfig,
+    render_drilldown_dashboard,
+    render_overview_dashboard,
+    render_presentation_config_sidebar,
+    render_presentation_mode,
+    sync_business_context_from_state,
+)
 from datamind_ai.dictionary.generator import generate_dictionary
 from datamind_ai.export.formats import export_to_excel, export_to_pdf, export_to_word
 from datamind_ai.export.reporter import export_filename, generate_markdown_report
@@ -26,9 +34,8 @@ from datamind_ai.llm.factory import (
     OLLAMA_SETUP_MSG,
     create_provider,
     create_provider_for_task,
-    detect_available_backends,
     ensure_ollama_available,
-    get_task_models,
+    get_installed_ollama_models,
 )
 from datamind_ai.llm.tasks import LLMTask
 from datamind_ai.mapping.mapper import propose_mappings
@@ -50,7 +57,11 @@ from datamind_ai.upload.loader import (
     load_file,
     make_dataset_name,
 )
+from datamind_ai.ui.navigation import get_page, render_sidebar_navigation
+from datamind_ai.ui.theme import inject_professional_theme, render_page_header
 from datamind_ai.utils.sampling import large_dataset_warning
+
+BRAND_COLOR = "#1f4e79"
 
 st.set_page_config(
     page_title="DataMind AI",
@@ -77,7 +88,24 @@ def init_session() -> AppSession:
         st.session_state.app_session = AppSession()
     if "processed_uploads" not in st.session_state:
         st.session_state.processed_uploads = set()
+    if "presentation_mode" not in st.session_state:
+        st.session_state.presentation_mode = False
     return st.session_state.app_session
+
+
+def get_presentation_config(session: AppSession) -> PresentationConfig:
+    if session.presentation_config:
+        return PresentationConfig(**session.presentation_config)
+    return PresentationConfig()
+
+
+def save_presentation_config(session: AppSession, config: PresentationConfig) -> None:
+    session.presentation_config = {
+        "visible_widgets": config.visible_widgets,
+        "brand_color": config.brand_color,
+        "presentation_title": config.presentation_title,
+        "company_name": config.company_name,
+    }
 
 
 def llm_error_message() -> str:
@@ -152,75 +180,23 @@ def refresh_analyses(dataset_name: str) -> None:
 
 
 def render_sidebar(session: AppSession) -> None:
-    st.sidebar.title("DataMind AI")
-    st.sidebar.caption("Assistente de análise de dados — modo local")
+    st.sidebar.markdown("### DataMind AI")
+    st.sidebar.caption("Análise de dados · modo local")
 
     if SETTINGS.confidential_mode:
-        st.sidebar.success("🔒 Modo confidencial — dados processados apenas localmente via Ollama")
-
-    ollama_error = ensure_ollama_available()
-    if ollama_error:
-        st.sidebar.error("Ollama não detetado")
-        with st.sidebar.expander("Como configurar o Ollama"):
-            st.markdown(ollama_error)
-
-    init_llm()
-    provider = st.session_state.llm_provider
-    backends = detect_available_backends()
+        st.sidebar.success("🔒 Dados processados apenas no seu PC")
 
     st.sidebar.divider()
-    st.sidebar.subheader("Motor de IA (Ollama local)")
-    if backends["ollama"]:
-        st.sidebar.info(f"**Estado:** Ativo\n\n**Modelo:** {provider.model}")
-    else:
-        st.sidebar.warning("Ollama inativo — módulos de IA indisponíveis")
 
-    task_models = get_task_models()
-    with st.sidebar.expander("Modelos por módulo"):
-        for task_name, model in task_models.items():
-            st.write(f"- {task_name}: `{model}`")
-
-    st.sidebar.divider()
-    st.sidebar.subheader("Projeto")
-    PROJECTS_DIR.mkdir(exist_ok=True)
-    existing_projects = sorted(
-        p.name for p in PROJECTS_DIR.iterdir() if p.is_dir() and (p / "project.json").exists()
-    )
-
-    project_name = st.sidebar.text_input(
-        "Nome do projeto",
-        value=st.session_state.get("project_name", ""),
-        placeholder="ex: cliente_xyz_2026",
-    )
-    st.session_state.project_name = project_name
-
-    if st.sidebar.button("Guardar projeto", use_container_width=True, disabled=not project_name):
-        path = save_project(session, PROJECTS_DIR / project_name, session.mappings)
-        st.sidebar.success(f"Guardado em `{path.name}`")
-
-    if existing_projects:
-        load_choice = st.sidebar.selectbox("Abrir projeto", existing_projects)
-        if st.sidebar.button("Carregar projeto", use_container_width=True):
-            loaded_session, loaded_mappings = load_project(PROJECTS_DIR / load_choice)
-            st.session_state.app_session = loaded_session
-            st.session_state.processed_uploads = {
-                info.upload_fingerprint
-                for info in loaded_session.datasets.values()
-                if info.upload_fingerprint
-            }
-            loaded_session.mappings = loaded_mappings
-            st.session_state.project_name = load_choice
-            st.rerun()
-
-    st.sidebar.divider()
-    st.sidebar.subheader("Upload de Dataset")
+    # --- Dados ---
+    st.sidebar.markdown("**Dados**")
     uploaded_files = st.sidebar.file_uploader(
         "Carregar ficheiros",
         type=["csv", "xlsx", "json"],
         accept_multiple_files=True,
-        help="CSV, Excel (.xlsx, todas as folhas), JSON",
+        help="CSV, Excel (todas as folhas), JSON",
+        label_visibility="collapsed",
     )
-
     if uploaded_files:
         for uploaded in uploaded_files:
             for msg in process_upload(session, uploaded.name, uploaded.getvalue()):
@@ -231,31 +207,116 @@ def render_sidebar(session: AppSession) -> None:
                 else:
                     st.sidebar.error(msg)
 
-    st.sidebar.divider()
-    st.sidebar.subheader("Datasets carregados")
+    if session.datasets:
+        dataset_names = list(session.datasets.keys())
+        selected = st.sidebar.selectbox(
+            "Dataset ativo",
+            dataset_names,
+            index=dataset_names.index(session.active_dataset)
+            if session.active_dataset in dataset_names
+            else 0,
+        )
+        session.active_dataset = selected
 
-    if not session.datasets:
-        st.sidebar.warning("Nenhum dataset carregado.")
-        return
+        st.sidebar.divider()
+        render_sidebar_navigation()
 
-    dataset_names = list(session.datasets.keys())
-    selected = st.sidebar.selectbox(
-        "Dataset ativo",
-        dataset_names,
-        index=dataset_names.index(session.active_dataset)
-        if session.active_dataset in dataset_names
-        else 0,
+        st.sidebar.divider()
+        with st.sidebar.expander("Projeto"):
+            PROJECTS_DIR.mkdir(exist_ok=True)
+            existing_projects = sorted(
+                p.name for p in PROJECTS_DIR.iterdir()
+                if p.is_dir() and (p / "project.json").exists()
+            )
+            project_name = st.text_input(
+                "Nome",
+                value=st.session_state.get("project_name", ""),
+                placeholder="cliente_xyz_2026",
+            )
+            st.session_state.project_name = project_name
+            if st.button("Guardar", use_container_width=True, disabled=not project_name):
+                sync_business_context_from_state(session)
+                path = save_project(session, PROJECTS_DIR / project_name, session.mappings)
+                st.success(f"Guardado: {path.name}")
+            if existing_projects:
+                load_choice = st.selectbox("Abrir", existing_projects)
+                if st.button("Carregar", use_container_width=True):
+                    loaded_session, loaded_mappings = load_project(PROJECTS_DIR / load_choice)
+                    st.session_state.app_session = loaded_session
+                    st.session_state.processed_uploads = {
+                        info.upload_fingerprint
+                        for info in loaded_session.datasets.values()
+                        if info.upload_fingerprint
+                    }
+                    for name, ds in loaded_session.datasets.items():
+                        st.session_state[f"business_context_{name}"] = ds.business_context or ""
+                    loaded_session.mappings = loaded_mappings
+                    st.session_state.project_name = load_choice
+                    st.rerun()
+
+        with st.sidebar.expander("Modo Apresentação"):
+            pres_config = get_presentation_config(session)
+            pres_config = render_presentation_config_sidebar(pres_config)
+            save_presentation_config(session, pres_config)
+            if st.button("Entrar em apresentação", use_container_width=True):
+                save_presentation_config(session, pres_config)
+                st.session_state.presentation_mode = True
+                st.rerun()
+
+        if st.sidebar.button("Remover dataset", type="secondary", use_container_width=True):
+            fp = session.remove_dataset(selected)
+            if fp:
+                st.session_state.processed_uploads.discard(fp)
+            st.rerun()
+    else:
+        st.sidebar.info("Carregue um ficheiro para começar.")
+
+    with st.sidebar.expander("Configuração técnica"):
+        ollama_error = ensure_ollama_available()
+        if ollama_error:
+            st.error("Ollama não detetado")
+            st.markdown(ollama_error)
+        else:
+            init_llm()
+            provider = st.session_state.llm_provider
+            st.write(f"**Modelo:** `{provider.model}`")
+            for m in get_installed_ollama_models():
+                st.write(f"- `{m}`")
+            if getattr(provider, "resolve_warning", None):
+                st.warning(provider.resolve_warning)
+
+
+def render_visual_dashboard_tab(info) -> None:
+    page = get_page("dashboard")
+    render_page_header(
+        page.title if page else "Dashboard Visual",
+        page.description if page else "",
+        breadcrumb="Visual Analytics",
+        dataset_name=info.name,
     )
-    session.active_dataset = selected
+    show_all = st.toggle("Ver todas as colunas", value=False, help="Mostrar heatmap e gráficos para todas as colunas")
+    render_overview_dashboard(info, technical=True, show_all_columns=show_all, brand_color=BRAND_COLOR)
 
-    if st.sidebar.button("Remover dataset ativo", type="secondary"):
-        fp = session.remove_dataset(selected)
-        if fp:
-            st.session_state.processed_uploads.discard(fp)
-        st.rerun()
+
+def render_drilldown_tab(info, session: AppSession) -> None:
+    page = get_page("drilldown")
+    render_page_header(
+        page.title if page else "Análise Detalhada",
+        page.description if page else "",
+        breadcrumb="Visual Analytics",
+        dataset_name=info.name,
+    )
+    render_drilldown_dashboard(info, session, technical=True, brand_color=BRAND_COLOR)
 
 
 def render_overview_tab(info) -> None:
+    page = get_page("overview")
+    render_page_header(
+        page.title if page else "Visão Geral",
+        page.description if page else "",
+        breadcrumb="Exploração",
+        dataset_name=info.name,
+    )
     overview = info.overview
     if overview is None:
         st.warning("Visão geral não disponível.")
@@ -290,6 +351,13 @@ def render_overview_tab(info) -> None:
 
 
 def render_statistics_tab(info) -> None:
+    page = get_page("statistics")
+    render_page_header(
+        page.title if page else "Estatísticas",
+        page.description if page else "",
+        breadcrumb="Exploração",
+        dataset_name=info.name,
+    )
     stats = info.statistics
     if stats is None:
         st.warning("Estatísticas não disponíveis.")
@@ -416,6 +484,8 @@ def render_dictionary_tab(info) -> None:
         if not provider.is_available():
             st.error(llm_error_message())
         else:
+            if getattr(provider, "resolve_warning", None):
+                st.warning(provider.resolve_warning)
             with st.spinner("A gerar dicionário de dados..."):
                 try:
                     info.data_dictionary = generate_dictionary(provider, info.df)
@@ -792,85 +862,76 @@ def render_reports_tab(info) -> None:
 
 def main() -> None:
     session = init_session()
+    inject_professional_theme(BRAND_COLOR)
+
+    active = session.get_active()
+    if active and st.session_state.get("presentation_mode"):
+        render_presentation_mode(
+            active,
+            session,
+            get_presentation_config(session),
+        )
+        return
+
     render_sidebar(session)
-
-    st.title("📊 DataMind AI")
-    st.caption("Data Intelligence Assistant — processamento 100% local (Ollama)")
-
-    if SETTINGS.confidential_mode:
-        st.info(
-            "🔒 **Modo confidencial ativo** — os dados dos clientes são processados apenas "
-            "no seu PC. Nenhuma informação é enviada para APIs externas."
-        )
-
-    ollama_error = ensure_ollama_available()
-    if ollama_error and session.datasets:
-        st.warning(
-            "Ollama não está disponível. As análises estatísticas funcionam, "
-            "mas os módulos de IA (chat, dicionário, SQL) estão indisponíveis."
-        )
 
     active = session.get_active()
     if active is None:
-        st.info(
-            "Carregue um dataset (CSV, Excel ou JSON) na barra lateral para começar a análise."
+        render_page_header(
+            "DataMind AI",
+            "Carregue um dataset na barra lateral para iniciar a análise.",
+            breadcrumb="Início",
         )
         st.markdown(
             """
-            ### Funcionalidades disponíveis
-            - **Visão Geral** — estrutura, tipos, valores em falta, duplicados
-            - **Estatísticas** — métricas descritivas numéricas e categóricas
-            - **Qualidade de Dados** — deteção automática de problemas
-            - **Dicionário de Dados** — documentação gerada por IA
-            - **SQL Assistant** — geração, explicação e otimização de queries
-            - **Mapeamento** — comparação entre datasets origem/destino
-            - **Regras de Negócio** — deteção de padrões implícitos
-            - **KPIs** — sugestões de indicadores de negócio
-            - **AI Chat** — perguntas em linguagem natural sobre os dados
-            - **Relatórios** — exportação em Markdown, Excel, PDF e Word
+            ### Como começar
+            1. **Carregar dados** — CSV, Excel ou JSON na sidebar
+            2. **Dashboard Visual** — visão gráfica automática
+            3. **Explorar** — qualidade, estatísticas, relações
+            4. **Assistentes IA** — dicionário, SQL, chat (Ollama local)
+            5. **Guardar projeto** — retomar análise mais tarde
             """
         )
         return
 
-    tabs = st.tabs(
-        [
-            "Visão Geral",
-            "Estatísticas",
-            "Dicionário de Dados",
-            "Qualidade de Dados",
-            "Relações",
-            "Mapeamento",
-            "SQL Assistant",
-            "Regras de Negócio",
-            "KPIs",
-            "AI Chat",
-            "Relatórios",
-        ]
-    )
+    page_id = st.session_state.get("nav_page", "dashboard")
+    page = get_page(page_id) or get_page("dashboard")
+    assert page is not None
 
-    tab_overview, tab_stats, tab_dict, tab_quality, tab_rel, tab_map, tab_sql, tab_rules, tab_kpi, tab_chat, tab_reports = tabs
-
-    with tab_overview:
+    if page.id == "dashboard":
+        render_visual_dashboard_tab(active)
+    elif page.id == "drilldown":
+        render_drilldown_tab(active, session)
+    elif page.id == "overview":
         render_overview_tab(active)
-    with tab_stats:
+    elif page.id == "statistics":
         render_statistics_tab(active)
-    with tab_dict:
-        render_dictionary_tab(active)
-    with tab_quality:
+    elif page.id == "quality":
+        render_page_header(page.title, page.description, page.section, active.name)
         render_quality_tab(active)
-    with tab_rel:
+    elif page.id == "relationships":
+        render_page_header(page.title, page.description, page.section, active.name)
         render_relationships_tab(session)
-    with tab_map:
+    elif page.id == "mapping":
+        render_page_header(page.title, page.description, page.section, active.name)
         render_mapping_tab(session)
-    with tab_sql:
+    elif page.id == "dictionary":
+        render_page_header(page.title, page.description, page.section, active.name)
+        render_dictionary_tab(active)
+    elif page.id == "sql":
+        render_page_header(page.title, page.description, page.section, active.name)
         render_sql_tab(session)
-    with tab_rules:
+    elif page.id == "rules":
+        render_page_header(page.title, page.description, page.section, active.name)
         render_business_rules_tab(active)
-    with tab_kpi:
+    elif page.id == "kpis":
+        render_page_header(page.title, page.description, page.section, active.name)
         render_kpi_tab(active)
-    with tab_chat:
+    elif page.id == "chat":
+        render_page_header(page.title, page.description, page.section, active.name)
         render_chat_tab(active, session)
-    with tab_reports:
+    elif page.id == "reports":
+        render_page_header(page.title, page.description, page.section, active.name)
         render_reports_tab(active)
 
 

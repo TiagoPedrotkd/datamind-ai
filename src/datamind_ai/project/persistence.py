@@ -21,6 +21,7 @@ def _serialize_analyses(info: DatasetInfo) -> dict[str, Any]:
         "data_dictionary": info.data_dictionary,
         "business_rules": info.business_rules,
         "kpi_suggestions": info.kpi_suggestions,
+        "business_context": info.business_context,
     }
 
 
@@ -43,6 +44,7 @@ def save_project(session: AppSession, project_dir: Path, mappings: dict[str, Any
         "chat_history": session.chat_history,
         "datasets": datasets_meta,
         "mappings": mappings,
+        "presentation_config": session.presentation_config,
     }
 
     manifest_path = project_dir / "project.json"
@@ -79,10 +81,12 @@ def load_project(project_dir: Path) -> tuple[AppSession, dict[str, Any]]:
             data_dictionary=ds_meta.get("data_dictionary"),
             business_rules=ds_meta.get("business_rules"),
             kpi_suggestions=ds_meta.get("kpi_suggestions"),
+            business_context=ds_meta.get("business_context", ""),
         )
         session.datasets[name] = info
 
     session.active_dataset = manifest.get("active_dataset")
     session.chat_history = manifest.get("chat_history", [])
+    session.presentation_config = manifest.get("presentation_config")
     mappings = manifest.get("mappings", {})
     return session, mappings

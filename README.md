@@ -56,6 +56,9 @@ Por defeito, `CONFIDENTIAL_MODE=true` no `.env`:
 | SQL Assistant | Gerar, explicar, otimizar (DuckDB local) |
 | Chat | Perguntas sobre os dados (Ollama) |
 | Export | Markdown, Excel, PDF, Word |
+| Dashboard Visual (FR-021) | KPIs, heatmap, histogramas interativos |
+| Análise Detalhada (FR-022) | Filtros, correlação, drill-down, export PNG |
+| Modo Apresentação (FR-023) | Vista executiva, gráficos selecionáveis |
 
 ## Datasets grandes
 

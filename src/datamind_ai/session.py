@@ -19,6 +19,7 @@ class DatasetInfo:
     data_dictionary: list[dict[str, Any]] | None = None
     business_rules: list[dict[str, Any]] | None = None
     kpi_suggestions: list[dict[str, Any]] | None = None
+    business_context: str = ""
 
 
 @dataclass
@@ -27,6 +28,7 @@ class AppSession:
     active_dataset: str | None = None
     chat_history: list[dict[str, str]] = field(default_factory=list)
     mappings: dict[str, Any] = field(default_factory=dict)
+    presentation_config: dict[str, Any] | None = None
     llm_backend_name: str = "—"
     llm_model_name: str = "—"
 
